@@ -8374,37 +8374,25 @@ gtk_widget_is_sensitive (GtkWidget *widget)
   return !(widget->priv->state_flags & GTK_STATE_FLAG_INSENSITIVE);
 }
 
-/**
- * gtk_widget_set_parent:
- * @widget: a #GtkWidget
- * @parent: parent container
- *
- * This function is useful only when implementing subclasses of
- * #GtkContainer.
- * Sets the container as the parent of @widget, and takes care of
- * some details such as updating the state and style of the child
- * to reflect its new location. The opposite function is
- * gtk_widget_unparent().
- **/
-void
-gtk_widget_set_parent (GtkWidget *widget,
-		       GtkWidget *parent)
+
+/* Insert @widget into the children list of @parent,
+ * after @previous_child */
+static void
+gtk_widget_reposition_after (GtkWidget *widget,
+                             GtkWidget *parent,
+                             GtkWidget *previous_child)
 {
   GtkStateFlags parent_flags;
-  GtkWidgetPrivate *priv;
+  GtkWidgetPrivate *priv = gtk_widget_get_instance_private (widget);
+  GtkWidget *next_child;
   GtkStateData data;
-
-  g_return_if_fail (GTK_IS_WIDGET (widget));
-  g_return_if_fail (GTK_IS_WIDGET (parent));
-  g_return_if_fail (widget != parent);
-
-  priv = widget->priv;
 
   if (priv->parent != NULL)
     {
       g_warning ("Can't set a parent on widget which has a parent");
       return;
     }
+
   if (_gtk_widget_is_toplevel (widget))
     {
       g_warning ("Can't set a parent on a toplevel widget");
@@ -8421,15 +8409,30 @@ gtk_widget_set_parent (GtkWidget *widget,
   gtk_widget_push_verify_invariants (widget);
 
   priv->parent = parent;
-  if (parent)
+
+  priv->prev_sibling = previous_child;
+
+  if (previous_child)
     {
-      priv->prev_sibling = parent->priv->last_child;
-      if (parent->priv->last_child)
-        parent->priv->last_child->priv->next_sibling = widget;
-      parent->priv->last_child = widget;
-      if (!parent->priv->first_child)
-        parent->priv->first_child = widget;
+      next_child = previous_child->priv->next_sibling;
+      previous_child->priv->next_sibling = widget;
     }
+  else
+    {
+      next_child = _gtk_widget_get_first_child (parent);
+    }
+
+  if (next_child)
+    {
+      next_child->priv->prev_sibling = widget;
+      priv->next_sibling = next_child;
+    }
+
+  if (parent->priv->first_child == next_child)
+    parent->priv->first_child = widget;
+
+  if (parent->priv->last_child == previous_child)
+    parent->priv->last_child = widget;
 
   parent_flags = _gtk_widget_get_state_flags (parent);
 
@@ -8440,7 +8443,12 @@ gtk_widget_set_parent (GtkWidget *widget,
   gtk_widget_propagate_state (widget, &data);
 
   if (gtk_css_node_get_parent (widget->priv->cssnode) == NULL)
-    gtk_css_node_set_parent (widget->priv->cssnode, parent->priv->cssnode);
+    {
+      gtk_css_node_insert_after (parent->priv->cssnode,
+                                 priv->cssnode,
+                                 previous_child ? previous_child->priv->cssnode : NULL);
+   }
+
   if (priv->context)
     gtk_style_context_set_parent (priv->context,
                                   _gtk_widget_get_style_context (parent));
@@ -8461,8 +8469,8 @@ gtk_widget_set_parent (GtkWidget *widget,
       _gtk_widget_get_visible (widget))
     {
       if (_gtk_widget_get_child_visible (widget) &&
-	  _gtk_widget_get_mapped (priv->parent))
-	gtk_widget_map (widget);
+          _gtk_widget_get_mapped (priv->parent))
+        gtk_widget_map (widget);
 
       gtk_widget_queue_resize (priv->parent);
     }
@@ -8486,6 +8494,31 @@ gtk_widget_set_parent (GtkWidget *widget,
     }
 
   gtk_widget_pop_verify_invariants (widget);
+}
+
+/**
+ * gtk_widget_set_parent:
+ * @widget: a #GtkWidget
+ * @parent: parent container
+ *
+ * This function is useful only when implementing subclasses of
+ * #GtkContainer.
+ * Sets the container as the parent of @widget, and takes care of
+ * some details such as updating the state and style of the child
+ * to reflect its new location. The opposite function is
+ * gtk_widget_unparent().
+ **/
+void
+gtk_widget_set_parent (GtkWidget *widget,
+                       GtkWidget *parent)
+{
+  g_return_if_fail (GTK_IS_WIDGET (widget));
+  g_return_if_fail (GTK_IS_WIDGET (parent));
+  g_return_if_fail (_gtk_widget_get_parent (widget) == NULL);
+
+  gtk_widget_reposition_after (widget,
+                               parent,
+                               _gtk_widget_get_last_child (parent));
 }
 
 /**
@@ -15632,6 +15665,57 @@ gtk_widget_get_prev_sibling (GtkWidget *widget)
   g_return_val_if_fail (GTK_IS_WIDGET (widget), NULL);
 
   return widget->priv->prev_sibling;
+}
+
+/*
+ * @widget: a #GtkWidget
+ * @parent: the parent #GtkWidget to insert @widget into
+ * @previous_child: (nullable): the new previous sibling of @widget
+ *
+ * Inserts @widget into the child widget list of @parent.
+ * It will be placed after @previous_child, or at the beginning if @previous_child is %NULL.
+ *
+ * After calling this function, gtk_widget_get_prev_sibling(widget) will return @previous_child.
+ */
+void
+gtk_widget_insert_after (GtkWidget *widget,
+                         GtkWidget *parent,
+                         GtkWidget *previous_child)
+{
+  g_return_if_fail (GTK_IS_WIDGET (widget));
+  g_return_if_fail (GTK_IS_WIDGET (parent));
+  g_return_if_fail (previous_child == NULL || GTK_IS_WIDGET (previous_child));
+  g_return_if_fail (previous_child == NULL || _gtk_widget_get_parent (previous_child) == parent);
+
+  gtk_widget_reposition_after (widget,
+                               parent,
+                               previous_child);
+}
+
+/*
+ * @widget: a #GtkWidget
+ * @parent: the parent #GtkWidget to insert @widget into
+ * @next_child: (nullable): the new next sibling of @widget or %NULL
+ *
+ * Inserts @widget into the child widget list of @parent.
+ * It will be placed before @next_child, or at the end if @next_child is %NULL.
+ *
+ * After calling this function, gtk_widget_get_next_sibling(widget) will return @next_child
+ * if @next_child was not %NULL.
+ */
+void
+gtk_widget_insert_before (GtkWidget *widget,
+                          GtkWidget *parent,
+                          GtkWidget *next_child)
+{
+  g_return_if_fail (GTK_IS_WIDGET (widget));
+  g_return_if_fail (GTK_IS_WIDGET (parent));
+  g_return_if_fail (next_child == NULL || GTK_IS_WIDGET (next_child));
+  g_return_if_fail (next_child == NULL || _gtk_widget_get_parent (next_child) == parent);
+
+  gtk_widget_reposition_after (widget,
+                               parent,
+                               next_child ? next_child : _gtk_widget_get_last_child (parent));
 }
 
 void
