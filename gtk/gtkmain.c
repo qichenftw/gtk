@@ -2586,7 +2586,8 @@ _gtk_toplevel_pick (GtkWindow *toplevel,
         {
           gdouble tx = x, ty = y;
 
-          if (!gtk_widget_is_sensitive (child) ||
+          if (gtk_widget_get_pass_through (child) ||
+              !gtk_widget_is_sensitive (child) ||
               !gtk_widget_is_drawable (child))
             continue;
 
